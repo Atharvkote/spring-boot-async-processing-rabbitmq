@@ -1,5 +1,7 @@
 # Spring Boot RabbitMQ Async File Processing Demo
 
+<img width="1440" height="870" alt="image" src="https://github.com/user-attachments/assets/70a6fd76-01ce-4a49-ace6-b58d04449869" />
+
 A Spring Boot 3.x + RabbitMQ asynchronous file processing learning project that demonstrates how file uploads can be decoupled from background processing.
 
 The application stores uploaded files separately from their processing jobs, persists metadata and job state in PostgreSQL, and uses RabbitMQ to asynchronously dispatch processing work to consumers.
