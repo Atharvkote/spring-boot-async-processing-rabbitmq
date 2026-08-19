@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: rabbitmq-queue-demo
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        concurrency: 2
+        max-concurrency: 5
+        prefetch: 10
+        default-requeue-rejected: false
+    template:
+      mandatory: true
+      publisher-confirms: true
+      publisher-returns: true
+
+rabbitmq:
+  queue:
+    job: job.queue
+    retry: job.retry.queue
+    dlq: job.dlq
+  exchange:
+    job: job.exchange
+  routing:
+    key:
+      job: job.process
+      retry: job.retry
+      dlq: job.dlq
+
+server:
+  port: 8080
