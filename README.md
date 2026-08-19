@@ -1,4 +1,4 @@
-# Async Document Processing Platform - RabbitMQ
+# Async Document Processing Platform
 
 A Spring Boot 3.x + RabbitMQ based asynchronous document processing platform with JWT authentication, PostgreSQL persistence, and production-ready infrastructure.
 
