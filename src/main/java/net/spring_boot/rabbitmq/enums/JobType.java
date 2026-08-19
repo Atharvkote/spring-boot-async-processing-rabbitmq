@@ -4,5 +4,6 @@ public enum JobType {
     EMAIL,
     REPORT,
     IMAGE_PROCESSING,
-    DATA_PROCESSING
+    DATA_PROCESSING,
+    FILE_ANALYSIS
 }

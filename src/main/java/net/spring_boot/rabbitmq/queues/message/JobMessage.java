@@ -7,6 +7,7 @@ import java.util.UUID;
 
 public record JobMessage(
         UUID id,
+        UUID fileId,
         JobType type,
         int attempt,
         int maxAttempts,

@@ -2,6 +2,11 @@ spring:
   application:
     name: rabbitmq-queue-demo
 
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/rabbitmq_demo}
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
@@ -58,3 +63,6 @@ job:
       - 5000
       - 15000
       - 45000
+
+file-storage:
+  directory: ./storage

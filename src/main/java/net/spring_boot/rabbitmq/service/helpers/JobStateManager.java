@@ -7,7 +7,7 @@ import java.util.EnumSet;
 import java.util.Map;
 
 @Service
-public class JobStateManger {
+public class JobStateManager {
 
     private static final Map<JobStatus, EnumSet<JobStatus>> TRANSITIONS = Map.of(
             JobStatus.QUEUED, EnumSet.of(JobStatus.PROCESSING),
@@ -19,6 +19,9 @@ public class JobStateManger {
     );
 
     public void validateTransition(JobStatus from, JobStatus to) {
+        if (from == null && to == JobStatus.QUEUED) {
+            return;
+        }
         EnumSet<JobStatus> allowed = TRANSITIONS.get(from);
         if (allowed == null || !allowed.contains(to)) {
             throw new IllegalArgumentException(

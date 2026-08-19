@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS job_history (
     id UUID PRIMARY KEY,
-    job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    job_id UUID NOT NULL REFERENCES processing_jobs(id) ON DELETE CASCADE,
     previous_status VARCHAR(50) NOT NULL,
     new_status VARCHAR(50) NOT NULL,
     attempt INTEGER NOT NULL,

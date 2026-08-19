@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "jobs")
+@Table(name = "processing_jobs")
 @Getter
 @Setter
 public class Job {
@@ -21,6 +21,9 @@ public class Job {
     @GeneratedValue
     @Column(columnDefinition = "uuid")
     private UUID id;
+
+    @Column(name = "file_id", columnDefinition = "uuid", nullable = false)
+    private UUID fileId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 50)

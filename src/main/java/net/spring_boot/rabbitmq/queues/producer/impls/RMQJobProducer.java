@@ -30,7 +30,7 @@ public class RMQJobProducer implements JobProducer {
             message.getMessageProperties().setContentType("application/json");
             return message;
         });
-        log.info("Publishing job id={} routingKey=job.created", jobMessage.id());
+        log.info("Publishing job jobId={} fileId={} routingKey=job.created", jobMessage.id(), jobMessage.fileId());
     }
 
     @Override
@@ -44,8 +44,8 @@ public class RMQJobProducer implements JobProducer {
             message.getMessageProperties().setContentType("application/json");
             return message;
         });
-        log.info("Publishing retry job id={} attempt={} routingKey={} delay={}ms",
-                jobMessage.id(), attempt, routingKey, delay);
+        log.info("Publishing retry job jobId={} fileId={} attempt={} routingKey={} delay={}ms",
+                jobMessage.id(), jobMessage.fileId(), attempt, routingKey, delay);
     }
 
     @Override
@@ -55,6 +55,6 @@ public class RMQJobProducer implements JobProducer {
             message.getMessageProperties().setContentType("application/json");
             return message;
         });
-        log.info("Publishing job id={} to DLQ", jobMessage.id());
+        log.info("Publishing job jobId={} fileId={} to DLQ", jobMessage.id(), jobMessage.fileId());
     }
 }

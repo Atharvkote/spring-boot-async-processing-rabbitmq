@@ -1,346 +1,456 @@
-# Async Document Processing Platform
+# Spring Boot RabbitMQ Async File Processing Demo
 
-A Spring Boot 3.x + RabbitMQ based asynchronous document processing platform with JWT authentication, PostgreSQL persistence, and production-ready infrastructure.
+A backend-only Spring Boot 3.x + RabbitMQ asynchronous file processing learning demo. It demonstrates core RabbitMQ concepts using a file upload REST API, PostgreSQL persistence, local file storage, and Flyway migrations.
 
-## Table of Contents
+## Learning Objectives
 
-- [Architecture](#architecture)
-- [RabbitMQ Concepts](#rabbitmq-concepts)
-- [Producer/Consumer Flow](#producerconsumer-flow)
-- [Acknowledgement](#acknowledgement)
-- [Retry with Exponential Backoff](#retry-with-exponential-backoff)
-- [Dead Letter Queue (DLQ)](#dead-letter-queue-dlq)
-- [Prefetch and Concurrency](#prefetch-and-concurrency)
-- [Idempotency](#idempotency)
-- [Database Model](#database-model)
-- [API Documentation](#api-documentation)
-- [Local Setup](#local-setup)
-- [Docker Setup](#docker-setup)
-- [RabbitMQ Management UI](#rabbitmq-management-ui)
-- [Testing](#testing)
+- Multipart file upload
+- File storage abstraction
+- PostgreSQL file metadata
+- Producer / Consumer pattern
+- Exchange, routing keys, durable queues
+- Manual acknowledgement
+- Consumer concurrency and prefetch
+- Dead-letter exchange (DLX) and dead-letter queue (DLQ)
+- Delayed retry with TTL
+- Idempotent processing
+- Job lifecycle and state transitions
+- Separation between file storage and processing
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph "Client Layer"
-        UI[Web UI / API Client]
-        UI -->|Upload Document| AUTH[JWT Auth Filter]
-    end
-
-    subgraph "Application Layer"
-        AUTH -->|Authenticated| CTRL[REST Controllers]
-        CTRL -->|Save Metadata| DOC_SVC[Document Service]
-        CTRL -->|Publish Message| PROD[RabbitMQ Producer]
-    end
-
-    subgraph "Message Broker"
-        PROD -->|Publish| EXCHANGE[document.exchange<br/>Topic Exchange]
-        EXCHANGE -->|Route: document.process| Q1[document.queue]
-        EXCHANGE -->|Route: document.retry| Q2[document.retry.queue]
-        EXCHANGE -->|Route: document.dlq| Q3[document.dlq]
-    end
-
-    subgraph "Worker Layer"
-        Q1 -->|Consume| WORKER[Async Worker Listener]
-        Q2 -->|Re-deliver| WORKER
-    end
-
-    subgraph "Error Handling"
-        WORKER -->|Max Retries Exceeded| DLQ[document.dlq]
-        DLQ -->|Manual Intervention| OPS[Operations Team]
-    end
-
-    subgraph "Persistence"
-        DOC_SVC -->|Read/Write| DB[(PostgreSQL)]
-        WORKER -->|Job Status Updates| DB
-    end
-
-    subgraph "Storage"
-        CTRL -->|Save Files| FS[File Storage]
-    end
+```text
+              Upload File
+                   │
+                   ▼
+            FileController
+                   │
+                   ▼
+          FileStorageService
+                   │
+                   ▼
+             ./storage
+                   │
+                   ▼
+            PostgreSQL
+                   │
+                   ▼
+            Create Job
+                   │
+                   ▼
+         RabbitMQ Producer
+                   │
+                   ▼
+           job.exchange
+                   │
+                   ▼
+             job.queue
+                   │
+                   ▼
+            Job Consumer
+                   │
+                   ▼
+           Load File
+                   │
+                   ▼
+      FileStorageService.read()
+                   │
+                   ▼
+          Process File
+              │       │
+           success   failure
+              │       │
+              ▼       ▼
+          COMPLETED  RETRY
+                       │
+                       ▼
+                    TTL
+                       │
+                       ▼
+                  job.queue
+                       │
+                       ▼
+                     DLQ
 ```
 
-## RabbitMQ Concepts
+## RabbitMQ Topology
 
-### Exchange
-- **Name**: `document.exchange`
-- **Type**: Topic
-- **Purpose**: Routes processing messages to appropriate queues based on routing keys
-
-### Queues
-| Queue | Purpose |
-|-------|---------|
-| `document.queue` | Primary queue for document processing jobs |
-| `document.retry.queue` | Delayed queue for retry attempts with backoff |
-| `document.dlq` | Dead letter queue for failed jobs after max retries |
+| Name | Type | Purpose |
+|------|------|---------|
+| `job.exchange` | Direct | Main exchange for jobs |
+| `job.retry.exchange` | Direct | Retry exchange |
+| `job.queue` | Durable | Main processing queue |
+| `job.retry.5s` | Durable | 5-second delayed retry |
+| `job.retry.15s` | Durable | 15-second delayed retry |
+| `job.retry.45s` | Durable | 45-second delayed retry |
+| `job.dlq` | Durable | Dead-letter queue |
 
 ### Routing Keys
-| Routing Key | Queue | Usage |
-|-------------|-------|-------|
-| `document.process` | `document.queue` | Initial processing dispatch |
-| `document.retry` | `document.retry.queue` | Retry after failure with backoff |
-| `document.dlq` | `document.dlq` | Final failure destination |
 
-### Bindings
-- `document.exchange` → `document.process` → `document.queue`
-- `document.exchange` → `document.retry` → `document.retry.queue`
-- `document.exchange` → `document.dlq` → `document.dlq`
+- `job.created` → `job.queue`
+- `job.retry.5s` → `job.retry.5s`
+- `job.retry.15s` → `job.retry.15s`
+- `job.retry.45s` → `job.retry.45s`
+- `job.dead` → `job.dlq`
 
-## Producer/Consumer Flow
+## Message Lifecycle
 
-1. **Client** uploads a document via REST API with JWT authentication
-2. **Controller** saves file metadata to PostgreSQL and publishes message to `document.exchange`
-3. **Exchange** routes message to `document.queue` using `document.process` routing key
-4. **Consumer** picks up message, processes document (text extraction, OCR, etc.)
-5. **ACK/NACK**: Consumer acknowledges successful processing or rejects with retry
-6. **Retry Queue**: On failure, message is routed to `document.retry.queue` with exponential backoff
-7. **DLQ**: After max retries (3 attempts), message goes to `document.dlq`
+### Successful Processing
 
-## Acknowledgement
+```text
+POST /api/files
+    ↓
+File stored in ./storage
+    ↓
+File metadata saved in PostgreSQL
+    ↓
+Processing job created (QUEUED)
+    ↓
+JobMessage published to job.exchange (routing key: job.created)
+    ↓
+Delivered to job.queue
+    ↓
+Consumer receives message
+    ↓
+Load job from PostgreSQL
+    ↓
+Load file from FileStorageService
+    ↓
+Read file bytes
+    ↓
+JobProcessor simulates work
+    ↓
+Status → COMPLETED
+    ↓
+basicAck
+```
 
-- **Manual ACK**: Consumer sends `basicAck` after successful processing
-- **NACK with requeue**: Consumer sends `basicNack` with `requeue=true` to return to queue for immediate retry
-- **NACK without requeue**: Consumer sends `basicNack` with `requeue=false` to route to DLQ
-- **Auto-ACK disabled**: All acks are manual for reliability
+### Failure and Retry
 
-## Retry with Exponential Backoff
+```text
+Consumer receives message
+    ↓
+Load job
+    ↓
+Load file
+    ↓
+Read file bytes
+    ↓
+JobProcessor throws exception
+    ↓
+Status → FAILED
+    ↓
+attempt < maxAttempts?
+    ↓
+YES
+    ↓
+Status → RETRYING
+    ↓
+Message published to job.retry.exchange
+    ↓
+Routed to job.retry.5s (or 15s / 45s)
+    ↓
+TTL expires
+    ↓
+Dead-lettered back to job.exchange
+    ↓
+Routed to job.queue (routing key: job.created)
+    ↓
+Consumer receives message again
+    ↓
+attempt++
+    ↓
+...
+    ↓
+NO (max attempts reached)
+    ↓
+Status → DEAD_LETTERED
+    ↓
+Message published to job.dlq
+    ↓
+basicAck
+```
 
-| Attempt | Backoff Delay | Total Delay |
-|---------|---------------|-------------|
-| 1 → 2 | 5 seconds | 5 seconds |
-| 2 → 3 | 15 seconds | 20 seconds |
-| 3 → DLQ | 45 seconds | 65 seconds |
+## Manual ACK
 
-- Message TTL is set based on retry attempt
-- Dead letter exchange routes expired messages back to original queue
-- `x-death` headers track retry count
+The consumer uses `ackMode = "MANUAL"`. The message is acknowledged only after the processing decision is complete:
 
-## Dead Letter Queue (DLQ)
+- Success → `basicAck`
+- Retry scheduled → `basicAck` original message
+- DLQ → `basicAck` original message
 
-- Receives messages that exceed `max_attempts` (default: 3)
-- Requires manual intervention or automated cleanup
-- Provides message history and error details for debugging
-- Can be re-queued for reprocessing after fixing root cause
+This prevents uncontrolled `requeue=true` loops.
 
-## Prefetch and Concurrency
+## Prefetch
 
-- **Prefetch**: 10 messages per consumer (unacknowledged message limit)
-- **Concurrency**: 2-5 concurrent consumers (configurable via env vars)
-- **Impact**: Controls memory usage and processing throughput
-- **Tuning**: Adjust based on message processing time and system resources
+Configured via `spring.rabbitmq.listener.simple.prefetch: 10`.
+
+Prefetch controls how many unacknowledged messages can be delivered to a single consumer at once. With prefetch=10, a consumer can hold up to 10 messages before the broker sends more.
+
+## Consumer Concurrency
+
+Configured via:
+- `concurrency: 2` (minimum consumers)
+- `max-concurrency: 5` (maximum consumers)
+
+Multiple consumers process jobs in parallel. RabbitMQ distributes messages across available consumers.
 
 ## Idempotency
 
-- All document operations use idempotency keys (document ID)
-- Job status updates are tracked in `job_history` table
-- Duplicate message detection via message ID deduplication
-- Safe retries ensure no duplicate processing or side effects
+When a message arrives, the consumer loads the job from PostgreSQL by ID. If the job is already `COMPLETED` or `DEAD_LETTERED`, the message is acknowledged immediately without reprocessing. This handles duplicate message delivery.
 
-## Database Model
+## Job State Machine
 
-```mermaid
-erDiagram
-    USERS ||--o{ DOCUMENTS : owns
-    USERS ||--o{ PROCESSING_JOBS : initiates
-    DOCUMENTS ||--o{ PROCESSING_JOBS : "is processed by"
-    PROCESSING_JOBS ||--o{ JOB_HISTORY : "has history"
+Valid transitions:
 
-    USERS {
-        uuid id PK
-        varchar username
-        varchar email
-        varchar password
-        varchar role
-        timestamp created_at
-        timestamp updated_at
-    }
+| From | To |
+|------|----|
+| QUEUED | PROCESSING |
+| PROCESSING | COMPLETED |
+| PROCESSING | FAILED |
+| FAILED | RETRYING |
+| FAILED | DEAD_LETTERED |
+| RETRYING | PROCESSING |
+| DEAD_LETTERED | QUEUED |
 
-    DOCUMENTS {
-        uuid id PK
-        uuid user_id FK
-        varchar original_name
-        varchar stored_name
-        varchar file_path
-        varchar content_type
-        bigint file_size
-        timestamp created_at
-        timestamp updated_at
-    }
+Invalid transitions throw `InvalidStateTransitionException`.
 
-    PROCESSING_JOBS {
-        uuid id PK
-        uuid document_id FK
-        uuid user_id FK
-        varchar type
-        varchar status
-        integer attempts
-        integer max_attempts
-        text error_message
-        timestamp created_at
-        timestamp started_at
-        timestamp completed_at
-    }
+## Database
 
-    JOB_HISTORY {
-        uuid id PK
-        uuid job_id FK
-        varchar old_status
-        varchar new_status
-        text message
-        timestamp created_at
-    }
+### stored_files
+
+| Column | Type |
+|--------|------|
+| id | UUID |
+| original_name | VARCHAR(255) |
+| stored_name | VARCHAR(255) |
+| storage_path | VARCHAR(500) |
+| content_type | VARCHAR(100) |
+| file_size | BIGINT |
+| created_at | TIMESTAMP |
+| updated_at | TIMESTAMP |
+
+### processing_jobs
+
+| Column | Type |
+|--------|------|
+| id | UUID |
+| file_id | UUID |
+| type | VARCHAR(50) |
+| status | VARCHAR(50) |
+| attempts | INTEGER |
+| max_attempts | INTEGER |
+| error_message | TEXT |
+| created_at | TIMESTAMP |
+| updated_at | TIMESTAMP |
+| started_at | TIMESTAMP |
+| completed_at | TIMESTAMP |
+
+### job_history
+
+| Column | Type |
+|--------|------|
+| id | UUID |
+| job_id | UUID (FK) |
+| previous_status | VARCHAR(50) |
+| new_status | VARCHAR(50) |
+| attempt | INTEGER |
+| message | TEXT |
+| created_at | TIMESTAMP |
+
+Flyway owns the schema. JPA `ddl-auto` is set to `validate`.
+
+## File Storage
+
+```text
+Application
+     ↓
+FileStorageService (interface)
+     ↓
+LocalFileStorageService (implementation)
+     ↓
+./storage/
 ```
 
-## API Documentation
+Files are stored with UUID-based filenames. Path traversal is prevented. The abstraction allows future replacement with S3 without changing application code.
 
-- **Swagger UI**: http://localhost:8080/swagger-ui.html
-- **OpenAPI Spec**: http://localhost:8080/api-docs
-- **Health**: http://localhost:8080/actuator/health
-- **Metrics**: http://localhost:8080/actuator/metrics
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/files` | Upload a file |
+| GET | `/api/files` | List all files |
+| GET | `/api/files/{id}` | Get file metadata |
+| GET | `/api/files/{id}/download` | Download file |
+| GET | `/api/jobs/{id}` | Get job by ID |
+| GET | `/api/jobs/{id}/history` | Get job history |
+| GET | `/api/jobs` | List all jobs |
+| POST | `/api/jobs/{id}/retry` | Manually retry a failed job |
+
+### Upload File
+
+```bash
+curl -X POST http://localhost:8080/api/files \
+  -F "file=@/path/to/report.pdf"
+```
+
+### Manual Retry
+
+```text
+POST /api/jobs/{id}/retry
+```
+
+Resets a `FAILED` or `DEAD_LETTERED` job and re-queues it.
 
 ## Local Setup
 
-### Prerequisites
-- Java 17+
-- Maven 3.9+
-- PostgreSQL 16+
-- RabbitMQ 3.13+
-
-### Steps
-
-1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd rabbitmq
+# Start infrastructure
+docker compose up -d
+
+# Run the application
+./mvnw spring-boot:run
 ```
 
-2. Copy environment file:
+Or with your local PostgreSQL and RabbitMQ:
+
 ```bash
-cp .env.example .env
+./mvnw clean package
+java -jar target/*.jar
 ```
 
-3. Update `.env` with your local configurations
+## Manual Verification
 
-4. Start PostgreSQL and RabbitMQ locally
+1. **Upload a file**
+   ```bash
+   curl -X POST http://localhost:8080/api/files \
+     -F "file=@/path/to/report.pdf"
+   ```
 
-5. Run database migrations (Flyway will auto-run on startup)
+2. **Observe RabbitMQ Management UI** (http://localhost:15672)
+   - Check `job.queue` for the new message
+   - Check `job.exchange` bindings
 
-6. Build and run:
-```bash
-mvn clean install
-mvn spring-boot:run
+3. **Observe consumer logs**
+   - Consumer picks up the job
+   - Status changes to `PROCESSING`
+   - File is read from storage
+
+4. **Check file metadata**
+   ```bash
+   curl http://localhost:8080/api/files/{id}
+   ```
+
+5. **Check job status**
+   ```bash
+   curl http://localhost:8080/api/jobs/{id}
+   ```
+
+6. **Verify job history**
+   ```bash
+   curl http://localhost:8080/api/jobs/{id}/history
+   ```
+
+7. **Trigger failure**
+   - With `failure-rate: 0.3`, roughly 30% of jobs fail
+   - Failed jobs go to `RETRYING` state
+   - Message is published to `job.retry.5s`
+
+8. **Observe retry**
+   - After 5 seconds, TTL expires
+   - Message returns to `job.queue`
+   - Consumer reprocesses with `attempt=2`
+
+9. **Verify DLQ**
+   - After 3 failed attempts, job goes to `DEAD_LETTERED`
+   - Message appears in `job.dlq`
+
+10. **Verify idempotency**
+    - If a duplicate message arrives for a completed job, it is acknowledged without reprocessing
+
+11. **Download file**
+    ```bash
+    curl http://localhost:8080/api/files/{id}/download -o downloaded.pdf
+    ```
+
+## Configuration
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `spring.rabbitmq.host` | localhost | RabbitMQ host |
+| `spring.rabbitmq.port` | 5672 | RabbitMQ port |
+| `SPRING_DATASOURCE_URL` | jdbc:postgresql://localhost:5432/rabbitmq_demo | PostgreSQL JDBC URL |
+| `SPRING_DATASOURCE_USERNAME` | postgres | PostgreSQL username |
+| `SPRING_DATASOURCE_PASSWORD` | postgres | PostgreSQL password |
+| `job.processing.delay-ms` | 3000 | Simulated processing delay |
+| `job.processing.failure-rate` | 0.3 | Simulated failure rate |
+| `job.retry.delays` | [5000, 15000, 45000] | Retry delays in ms |
+| `file-storage.directory` | ./storage | Local file storage path |
+| `spring.servlet.multipart.max-file-size` | 20MB | Max file upload size |
+| `spring.servlet.multipart.max-request-size` | 20MB | Max request size |
+
+## Actuator
+
+- `GET /actuator/health`
+- `GET /actuator/info`
+
+## OpenAPI
+
+SpringDoc OpenAPI UI is available at:
+- http://localhost:8080/swagger-ui.html
+- http://localhost:8080/api-docs
+
+## Docker Compose Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| postgres | 5432 | PostgreSQL database |
+| rabbitmq | 5672, 15672 | RabbitMQ broker + Management UI |
+
+RabbitMQ Management UI: http://localhost:15672 (guest / guest)
+
+## Synchronous vs Asynchronous
+
+### Synchronous approach (not used here)
+
+```text
+POST /api/files
+      ↓
+save file
+      ↓
+process file
+      ↓
+wait 3 seconds
+      ↓
+response
 ```
 
-## Docker Setup
+The client waits for processing.
 
-### Prerequisites
-- Docker 20.10+
-- Docker Compose 1.29+
+### Asynchronous approach (this project)
 
-### Steps
+```text
+POST /api/files
+      ↓
+save file
+      ↓
+save metadata
+      ↓
+create job
+      ↓
+publish RabbitMQ message
+      ↓
+return immediately
 
-1. Copy environment file:
-```bash
-cp .env.example .env
+RabbitMQ
+      ↓
+worker
+      ↓
+process file
 ```
 
-2. Start all services:
-```bash
-docker-compose up --build
-```
-
-3. Access services:
-- Application: http://localhost:8080
-- RabbitMQ Management: http://localhost:15672
-
-4. Stop services:
-```bash
-docker-compose down
-```
-
-5. Remove volumes (clean slate):
-```bash
-docker-compose down -v
-```
-
-## RabbitMQ Management UI
-
-Access the RabbitMQ Management interface at:
-- **URL**: http://localhost:15672
-- **Username**: guest
-- **Password**: guest
-
-### Useful Sections
-
-- **Queues**: View messages, consumers, and queue statistics
-- **Exchanges**: Monitor routing and message flow
-- **Connections**: See active client connections
-- **Channels**: Monitor channel performance
-- **Admin**: Manage users, vhosts, and policies
-
-### Message Inspection
-
-1. Go to **Queues** tab
-2. Click on a queue (e.g., `document.queue`)
-3. View **Get messages** to inspect payload
-4. Use **Purge** to clear queue (careful!)
-5. Use **Publish message** to test routing
-
-## Testing
-
-### Run All Tests
-```bash
-mvn test
-```
-
-### Run Specific Test Profile
-```bash
-mvn test -Dspring.profiles.active=test
-```
-
-### Integration Tests
-```bash
-mvn verify
-```
-
-### RabbitMQ Test Container
-The test profile uses `application-test.yml` with:
-- `ddl-auto: create-drop` for clean test database
-- Separate test database URL
-- Test JWT secrets
-
-### API Testing
-Use the Swagger UI at http://localhost:8080/swagger-ui.html for interactive API testing.
-
-### Load Testing
-```bash
-# Install vegeta
-go install github.com/tsenart/vegeta@latest
-
-# Run load test
-echo 'POST http://localhost:8080/api/documents/upload' | vegeta attack -rate=10 -duration=30s | vegeta report
-```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SPRING_PROFILES_ACTIVE` | Active Spring profile | dev |
-| `DATABASE_URL` | PostgreSQL JDBC URL | jdbc:postgresql://localhost:5432/document_processing |
-| `DATABASE_USERNAME` | PostgreSQL username | postgres |
-| `DATABASE_PASSWORD` | PostgreSQL password | postgres |
-| `RABBITMQ_HOST` | RabbitMQ host | localhost |
-| `RABBITMQ_PORT` | RabbitMQ port | 5672 |
-| `RABBITMQ_USERNAME` | RabbitMQ username | guest |
-| `RABBITMQ_PASSWORD` | RabbitMQ password | guest |
-| `JWT_SECRET` | JWT signing secret | (required) |
-| `JWT_EXPIRATION_MS` | JWT token expiration | 3600000 |
-| `FILE_STORAGE_PATH` | File upload directory | ./uploads |
-| `RABBITMQ_LISTENER_CONCURRENCY` | Min concurrent consumers | 2 |
-| `RABBITMQ_LISTENER_MAX_CONCURRENCY` | Max concurrent consumers | 5 |
-| `RABBITMQ_LISTENER_PREFETCH` | Messages per consumer | 10 |
+This is the main concept the project teaches.
 
 ## License
 
-MIT License
+MIT

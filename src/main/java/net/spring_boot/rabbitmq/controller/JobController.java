@@ -1,7 +1,5 @@
 package net.spring_boot.rabbitmq.controller;
 
-import jakarta.validation.Valid;
-import net.spring_boot.rabbitmq.dto.CreateJobRequest;
 import net.spring_boot.rabbitmq.dto.JobHistoryResponse;
 import net.spring_boot.rabbitmq.dto.JobResponse;
 import net.spring_boot.rabbitmq.models.Job;
@@ -11,7 +9,7 @@ import net.spring_boot.rabbitmq.queues.message.JobMessage;
 import net.spring_boot.rabbitmq.queues.producer.JobProducer;
 import net.spring_boot.rabbitmq.responses.Response;
 import net.spring_boot.rabbitmq.service.JobService;
-import net.spring_boot.rabbitmq.service.helpers.JobStateManger;
+import net.spring_boot.rabbitmq.service.helpers.JobStateManager;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -25,30 +23,13 @@ import java.util.stream.Collectors;
 public class JobController {
 
     private final JobService jobService;
-    private final JobStateManger jobStateManger;
+    private final JobStateManager JobStateManager;
     private final JobProducer jobProducer;
 
-    public JobController(JobService jobService, JobStateManger jobStateManger, JobProducer jobProducer) {
+    public JobController(JobService jobService, JobStateManager JobStateManager, JobProducer jobProducer) {
         this.jobService = jobService;
-        this.jobStateManger = jobStateManger;
+        this.JobStateManager = JobStateManager;
         this.jobProducer = jobProducer;
-    }
-
-    @PostMapping
-    public ResponseEntity<Response> createJob(@Valid @RequestBody CreateJobRequest request) {
-        Job job = jobService.createJob(request.getType(), request.getMaxAttempts());
-
-        JobMessage jobMessage = new JobMessage(
-                job.getId(),
-                job.getType(),
-                1,
-                job.getMaxAttempts(),
-                job.getCreatedAt()
-        );
-        jobProducer.publishJob(jobMessage);
-
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(Response.success("Job created and queued", toResponse(job)));
     }
 
     @GetMapping("/{id}")
@@ -81,15 +62,17 @@ public class JobController {
             throw new BadRequestException("Job cannot be retried from state: " + job.getStatus());
         }
 
-        jobStateManger.validateTransition(job.getStatus(), JobStatus.QUEUED);
+        JobStatus previousStatus = job.getStatus();
+        JobStateManager.validateTransition(previousStatus, JobStatus.QUEUED);
         job.setStatus(JobStatus.QUEUED);
         job.setAttempts(0);
         job.setErrorMessage(null);
         jobService.save(job);
-        jobService.recordHistory(job, job.getStatus(), JobStatus.QUEUED, 0, "Manual retry initiated");
+        jobService.recordHistory(job, previousStatus, JobStatus.QUEUED, 0, "Manual retry initiated");
 
         JobMessage jobMessage = new JobMessage(
                 job.getId(),
+                job.getFileId(),
                 job.getType(),
                 1,
                 job.getMaxAttempts(),
