@@ -1,4 +1,4 @@
-package net.spring_boot.rabbitmq.dtos.jobs;
+package net.spring_boot.rabbitmq.dto;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -15,7 +15,7 @@ import java.util.UUID;
 public class JobHistoryResponse {
     private UUID id;
     private UUID jobId;
-    private String oldStatus;
+    private String previousStatus;
     private String newStatus;
     private String message;
     private Instant createdAt;

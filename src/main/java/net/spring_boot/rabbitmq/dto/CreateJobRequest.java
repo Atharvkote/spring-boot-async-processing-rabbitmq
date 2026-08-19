@@ -1,4 +1,4 @@
-package net.spring_boot.rabbitmq.dtos.jobs;
+package net.spring_boot.rabbitmq.dto;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -14,9 +14,6 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class CreateJobRequest {
-    @NotNull(message = "Document ID is required")
-    private UUID documentId;
-
     @NotNull(message = "Job type is required")
     private JobType type;
 

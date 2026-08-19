@@ -1,4 +1,4 @@
-package net.spring_boot.rabbitmq.dtos.jobs;
+package net.spring_boot.rabbitmq.dto;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -14,10 +14,8 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AdminJobResponse {
+public class JobResponse {
     private UUID id;
-    private UUID documentId;
-    private UUID userId;
     private JobType type;
     private JobStatus status;
     private int attempts;

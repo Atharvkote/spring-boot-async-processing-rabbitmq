@@ -2,6 +2,24 @@ spring:
   application:
     name: rabbitmq-queue-demo
 
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/rabbitmq_demo}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -18,18 +36,25 @@ spring:
       publisher-confirms: true
       publisher-returns: true
 
-rabbitmq:
-  queue:
-    job: job.queue
-    retry: job.retry.queue
-    dlq: job.dlq
-  exchange:
-    job: job.exchange
-  routing:
-    key:
-      job: job.process
-      retry: job.retry
-      dlq: job.dlq
+  mvc:
+    problemdetails:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
 
 server:
   port: 8080
+
+job:
+  processing:
+    delay-ms: 3000
+    failure-rate: 0.3
+  retry:
+    delays:
+      - 5000
+      - 15000
+      - 45000
